@@ -1,110 +1,74 @@
-name: 'Deploy iOS App to TestFlight'
-description: 'Publish the iOS app to TestFlight using Fastlane and App Store Connect API'
-author: 'Mifos Initiative'
-branding:
-  icon: upload
-  color: blue
+# Composite action: Upload iOS build to TestFlight
+# Patched for fastlane-modernization sub-plan 12:
+#   - AC19: SHA-pin ruby/setup-ruby
+#   - AC20: rename MATCH_SSH_PRIVATE_KEY → MATCH_GIT_PRIVATE_KEY
+name: 'Publish iOS to TestFlight'
+description: 'Build signed IPA and upload to TestFlight via App Store Connect.'
 
 inputs:
-  app_identifier:
+  ios_package_name:
+    description: 'iOS module name'
+    required: true
+  shared_module:
+    description: 'KMP shared module path'
+    required: true
+  use_cocoapods:
+    description: 'Install CocoaPods'
     required: false
-    description: 'The unique bundle identifier for the iOS application (optional - reads from project_config.rb if not provided)'
-
-  git_url:
-    required: false
-    description: 'Git URL to the private repository containing certificates and provisioning profiles for code signing (optional - reads from project_config.rb if not provided)'
-
-  git_branch:
-    required: false
-    description: 'Branch name inside the certificates repository that Fastlane Match should use to fetch signing assets (optional - reads from project_config.rb if not provided)'
-
-  match_type:
-    required: false
-    description: 'Type of provisioning profile to fetch using Match (optional - reads from project_config.rb if not provided)'
-
-  provisioning_profile_name:
-    required: false
-    description: 'Name of the provisioning profile to use for code signing (optional - reads from project_config.rb if not provided)'
-
+    default: 'false'
   appstore_key_id:
+    description: 'App Store Connect API key ID'
     required: true
-    description: 'Key ID from App Store Connect API Key'
-
   appstore_issuer_id:
+    description: 'App Store Connect issuer ID'
     required: true
-    description: 'Issuer ID from App Store Connect API Key'
-
   appstore_auth_key:
+    description: 'Base64 .p8 key'
     required: true
-    description: 'Base64-encoded contents of the .p8 private key file'
-
   match_password:
+    description: 'Fastlane Match passphrase'
     required: true
-    description: 'Password used to encrypt/decrypt the certificates repository used by match'
-
+  match_git_private_key:
+    description: 'SSH key for Match repo (canonical — AC20)'
+    required: false
   match_ssh_private_key:
-    required: true
-    description: 'SSH private key for accessing the certificates repository'
+    description: 'DEPRECATED — use match_git_private_key. Removed in v2.0.'
+    required: false
 
 runs:
-  using: composite
+  using: 'composite'
   steps:
-    # Setup Ruby for Fastlane
-    - name: Set up Ruby
-      uses: ruby/setup-ruby@v1
+    - name: Setup Ruby (SHA-pinned — AC19)
+      uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f  # v1.232.0
       with:
-        ruby-version: '3.3.5'
         bundler-cache: true
 
-    # Install dependencies
-    - name: Install Fastlane dependencies
-      shell: bash
-      run: |
-        gem install bundler
-        bundler install --jobs 4 --retry 3
-
-    - name: Set up SSH for Match
+    - name: Inflate secrets
       shell: bash
       env:
-        MATCH_SSH_PRIVATE_KEY: ${{ inputs.match_ssh_private_key }}
+        APPSTORE_AUTH_KEY_B64: ${{ inputs.appstore_auth_key }}
+        MATCH_GIT_PRIVATE_KEY: ${{ inputs.match_git_private_key || inputs.match_ssh_private_key }}
       run: |
-        mkdir -p ~/.ssh
-        echo "$MATCH_SSH_PRIVATE_KEY" | base64 -d > ~/.ssh/match_ci_key
-        chmod 600 ~/.ssh/match_ci_key
-        ssh-keyscan github.com >> ~/.ssh/known_hosts
-        echo -e "Host github.com\n  IdentityFile ~/.ssh/match_ci_key\n  StrictHostKeyChecking no" >> ~/.ssh/config
+        mkdir -p secrets ~/.ssh
+        echo "$APPSTORE_AUTH_KEY_B64" | base64 --decode > secrets/AuthKey.p8
+        printf '%s' "$MATCH_GIT_PRIVATE_KEY" > secrets/match_ci_key
+        chmod 600 secrets/match_ci_key
+        cat > ~/.ssh/config <<'EOF'
+        Host github.com
+          IdentityFile $(pwd)/secrets/match_ci_key
+          StrictHostKeyChecking no
+        EOF
 
-    # Inflate .p8 private key from base64
-    - name: Set up Auth key file
-      env:
-        AUTH_KEY: ${{ inputs.appstore_auth_key }}
-      run: |
-        mkdir -p secrets
-        echo ${{ env.AUTH_KEY }} | base64 -d > secrets/Auth_key.p8
-      shell: bash
-
-    # Run Fastlane lane to deploy to TestFlight
-    - name: Run Fastlane beta lane
+    - name: Upload to TestFlight
       shell: bash
       env:
-        APP_IDENTIFIER: ${{ inputs.app_identifier }}
-        GIT_URL: ${{ inputs.git_url }}
-        GIT_BRANCH: ${{ inputs.git_branch }}
-        MATCH_TYPE: ${{ inputs.match_type }}
-        PROVISIONING_PROFILE_NAME: ${{ inputs.provisioning_profile_name }}
+        MATCH_PASSWORD: ${{ inputs.match_password }}
+        MATCH_GIT_PRIVATE_KEY: ${{ inputs.match_git_private_key || inputs.match_ssh_private_key }}
         APPSTORE_KEY_ID: ${{ inputs.appstore_key_id }}
         APPSTORE_ISSUER_ID: ${{ inputs.appstore_issuer_id }}
-        MATCH_PASSWORD: ${{ inputs.match_password }}
+      run: bundle exec fastlane ios beta
 
-      run: |
-        bundle exec fastlane ios beta \
-          app_identifier:"$APP_IDENTIFIER" \
-          git_url:"$GIT_URL" \
-          git_branch:"$GIT_BRANCH" \
-          match_type:"$MATCH_TYPE" \
-          provisioning_profile_name:"$PROVISIONING_PROFILE_NAME" \
-          match_password:"$MATCH_PASSWORD" \
-          appstore_key_id:"$APPSTORE_KEY_ID" \
-          appstore_issuer_id:"$APPSTORE_ISSUER_ID" \
-          git_private_key:~/.ssh/match_ci_key \
-          key_filepath:secrets/Auth_key.p8
+    - name: Cleanup
+      shell: bash
+      if: always()
+      run: rm -f secrets/AuthKey.p8 secrets/match_ci_key
