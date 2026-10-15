@@ -60,7 +60,9 @@ jobs:
                   `To get your CLA on file:\n` +
                   `1. Complete the form at https://mifos.org/about-us/financial-legal/mifos-contributor-agreement\n` +
                   `2. Complete the CLA signing process\n` +
-                  `3. Once verified you will be added to the approved contributors list`
+                  `3. Once verified (this can take up to 48 working hours) you will be invited to the approved contributors list\n` +
+                  `4. You will receive an email from GitHub at your registered email address for the account with a link you must accept (this may go into your Junk folder, so please check it)\n` +
+                  `5. Once accepted, you will be added to the approved contributors list`
               });
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
